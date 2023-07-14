@@ -7,6 +7,8 @@ import pandas as pd
 import tkinter.ttk as ttk
 from tkinter import messagebox, Toplevel
 
+import time
+
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -72,7 +74,7 @@ class Application(tk.Tk):
         self.control_unit_entry.grid(row=6, column=1, padx=10)
 
     def create_process_button(self):
-        process_button = tk.Button(self, text="Process", command=self.process_summary_table, font=("Arial", 14, "bold"), bg="#336699", fg="white")
+        process_button = tk.Button(self, text="Start", command=self.process_summary_table, font=("Arial", 14, "bold"), bg="#336699", fg="white")
         process_button.grid(row=8, column=0, columnspan=3, pady=20)
 
     def create_footer(self):
@@ -97,14 +99,56 @@ class Application(tk.Tk):
         file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx;*.xls")])
         self.manufacturer_dtc_entry.delete(0, tk.END)
         self.manufacturer_dtc_entry.insert(0, file_path)
-
-    def get_all_fault_code(self):
-        manufacturer_dtc_df = self.manufacturer_dtc.parse(self.control_unit)
-        if manufacturer_dtc_df.empty:
-            print("Empty sheet")
-            return
         
-        self.fault_code_manufacturer_dtc = manufacturer_dtc_df.iloc[:, self.fault_code_column_manufacturer_dtc].values.tolist()
+
+    
+    def fault_code_in_normal_area(area, fault_code):
+        for a, f in zip(area, fault_code):
+            if a.isdigit() and f.isdigit():
+                if int(f) < int(a):
+                    return False  # Fault code is below the valid range
+            elif a == 'X':
+                if not f.isdigit() or int(f, 16) > 15:
+                    return False  # Fault code is outside the X-value range
+            elif a != f:
+                return False  # Mismatched characters
+
+        return True
+    
+    
+    def fault_code_in_area(area, fault_code):
+        if '-' in area:
+            start, end = area.split('-')
+            if len(fault_code) != len(start) or len(fault_code) != len(end):
+                return False
+
+            for a_start, a_end, f in zip(start, end, fault_code):
+                if a_start == "X" or a_end == "X":
+                    continue
+
+                if f < a_start or f > a_end:
+                    return False
+
+            return True
+        
+        
+
+
+
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
     def process_row(self, row):
         prefix_mapping = {
@@ -113,48 +157,119 @@ class Application(tk.Tk):
             "C": "C0000-C3FFF",
             "U": "U0000-U3FFF"
         }
-
-        fault_code_summary = row[self.fault_code_column]
-        if fault_code_summary not in self.fault_code_manufacturer_dtc:
-            return
         
+        # get the fault code 
+        fault_code_summary = row[self.fault_code_column]
+        
+        # get sae fault code and column_description
         sae_j2012da_sheet = prefix_mapping.get(fault_code_summary[0], "Invalid Prefix")
         sae_j2012da_df = self.sae_j2012da.parse(sae_j2012da_sheet)
         fault_code_sae = sae_j2012da_df.iloc[:, 2].values.tolist()
         check_column = sae_j2012da_df.iloc[:, 3].values.tolist()
+  
+        # check if fault code in sae file
+        if fault_code_summary in fault_code_sae:
+            if check_column[fault_code_sae.index(fault_code_summary)] == "ISO/SAE Reserved":
+                self.summary_table.at[self.index, "Kommentar Capgemini"] = "ISO/SAE Reserved: akutellen Kondiax-Auszug prüfen"
+                return
+            
+            elif check_column[fault_code_sae.index(fault_code_summary)] == "Manufacturer Controlled DTC":
+                # check if fault code in manufacturer dtc sheets
+                manufacturer_dtc_sheets = self.manufacturer_dtc.sheet_names 
+                for sheet in manufacturer_dtc_sheets:
+                    manufacturer_dtc_df = self.manufacturer_dtc.parse(sheet)
+                    fault_code_manufacturer_dtc = manufacturer_dtc_df.iloc[:, self.fault_code_column_manufacturer_dtc].values.tolist()
+                    
+                    if fault_code_summary in fault_code_manufacturer_dtc:
+                        self.summary_table.at[self.index, "Kommentar Capgemini"] = "In Manufacturer DTCs gefunden"
+                        return
+                    
+                    else:
+                        self.summary_table.at[self.index, "Kommentar Capgemini"] = "DTC nicht beantragt: bitte PAG benachrichtigen"
+                        return
+                    
+            else:
+                self.summary_table.at[self.index, "Kommentar Capgemini"] = "In SAE J2012DA gefunden"
+                return
+            
+        else:
+            for column in check_column:
+                if "Table" not in column:
+                    continue
+                
+                index = check_column.index(column)
+                if not self.fault_code_in_area(fault_code_sae[index], fault_code_summary):
+                    self.summary_table.at[self.index, "Kommentar Capgemini"] = "Fault Code in SAE J2012DA nicht gefunden (nicht direkt und in keinem Bereich): bitte Fault Code auf Tippfehler überprüfen"
+                    return
+                
+                if "ISO/SAE Reserved" in check_column[index]:
+                    self.summary_table.at[self.index, "Kommentar Capgemini"] = "ISO/SAE Reserved: akutellen Kondiax-Auszug prüfen"
+                    return
+                    
+                elif "Manufacturer Controlled DTC" in check_column[index]:
+                    # check if fault code in manufacturer dtc sheets
+                    manufacturer_dtc_sheets = self.manufacturer_dtc.sheet_names 
+                    for sheet in manufacturer_dtc_sheets:
+                        manufacturer_dtc_df = self.manufacturer_dtc.parse(sheet)
+                        fault_code_manufacturer_dtc = manufacturer_dtc_df.iloc[:, self.fault_code_column_manufacturer_dtc].values.tolist()
+                        
+                        if fault_code_summary in fault_code_manufacturer_dtc:
+                            self.summary_table.at[self.index, "Kommentar Capgemini"] = "In Manufacturer DTCs gefunden"
+                            return
+                        
+                        else:
+                            self.summary_table.at[self.index, "Kommentar Capgemini"] = "DTC nicht beantragt: bitte PAG benachrichtigen"
+                            return
         
-        if fault_code_summary not in fault_code_sae:
-            self.summary_table.at[self.index, "Kommentar Capgemini"] = "Nicht vorhanden"
-            self.summary_table.at[self.index, "Finding"] = "x"
-            return
+        # # checking if fault code not in sae file
+        # if fault_code_summary not in fault_code_sae:
+        #     self.summary_table.at[self.index, "Kommentar Capgemini"] = "Nicht vorhanden"
+        #     self.summary_table.at[self.index, "Finding"] = "x"
+        #     return
         
-        index = fault_code_sae.index(fault_code_summary)
-        if "ISO/SAE Reserved" in check_column[index]:
-            self.summary_table.at[self.index, "Kommentar Capgemini"] = "DTC ISO/SAE reserved: Aktuellen Kondiax Auszug prüfen."
-            return
+        # # checking if column_description is ISO/SAE Reserved
+        # index = fault_code_sae.index(fault_code_summary)
+        # if "ISO/SAE Reserved" in check_column[index]:
+        #     self.summary_table.at[self.index, "Kommentar Capgemini"] = "DTC ISO/SAE reserved: Aktuellen Kondiax Auszug prüfen."
+        #     return
 
-        self.summary_table.at[self.index, "Kommentar Capgemini"] = "Manufacturer-specific DTC. Aktuellen Kondiax Auszug prüfen."
+        # self.summary_table.at[self.index, "Kommentar Capgemini"] = "Manufacturer-specific DTC. Aktuellen Kondiax Auszug prüfen."
 
-    def process_summary_table(self):
+    def get_all_inputs(self):
         try:
-            summary_table_path = self.summary_table_entry.get()
+            self.summary_table_path = "C:\\Users\\mkanoua\\Downloads\\Excel\\Abgleich_herstellerspezifische_DTCs.xlsx"
             self.fault_code_column = int(self.fault_code_column_spinbox.get())
             self.start_row = int(self.start_row_spinbox.get()) - 1
-            sae_j2012da_path = self.sae_j2012da_entry.get()
-            manufacturer_dtc_path = self.manufacturer_dtc_entry.get()
+            self.sae_j2012da_path = "C:\\Users\\mkanoua\\Downloads\\Excel\\J2012DA_201812.xlsx"
+            self.manufacturer_dtc_path = "C:\\Users\\mkanoua\\Downloads\\Excel\\20220830_Manufacturer_specific_DTCs_PAG.xlsx"
             self.fault_code_column_manufacturer_dtc = int(self.fault_code_column_manufacturer_dtc_spinbox.get())
             self.control_unit = self.control_unit_entry.get()
-            summary_table_dir = os.path.dirname(summary_table_path)
-
-            if not summary_table_path or not sae_j2012da_path or not manufacturer_dtc_path:
+            
+            if not self.summary_table_path or not self.sae_j2012da_path or not self.manufacturer_dtc_path:
                 return messagebox.showerror("Error", "Please provide paths for all required files.")
             
             if not self.control_unit:
-                return messagebox.showerror("Error", "Please provide a control unit.")
+                continue_process = messagebox.askokcancel("Warning", "Control Unit was not provided. Do you want to proceed without a Control Unit name?", default='cancel')
+                if not continue_process:
+                    return
+        
+        except FileNotFoundError as e:
+            return messagebox.showerror("Error", f"Path not found: {e.filename}")
+        except Exception as e:
+            return messagebox.showerror("Error", "An error occurred while getting the inputs. Please try again.")
 
-            self.summary_table = pd.read_excel(summary_table_path)
-            self.sae_j2012da = pd.ExcelFile(sae_j2012da_path)
-            self.manufacturer_dtc = pd.ExcelFile(manufacturer_dtc_path)
+    def process_summary_table(self): 
+        start_time = time.time()
+        try:
+            self.get_all_inputs()
+            
+            #####
+            summary_table_dir = os.path.dirname(self.summary_table_path)
+            #####
+            
+            self.summary_table = pd.read_excel(self.summary_table_path)
+            self.sae_j2012da = pd.ExcelFile(self.sae_j2012da_path)
+            self.manufacturer_dtc = pd.ExcelFile(self.manufacturer_dtc_path)
 
             progress_window = Toplevel(self)
             progress_window.title("Processing...")
@@ -170,6 +285,7 @@ class Application(tk.Tk):
                 progress_bar.stop()
                 progress_window.destroy()
                 messagebox.showinfo("Process Complete", f"The summary table has been processed. Output saved to 'Abgleich_herstellerspezifische_DTCs_{self.control_unit}.xlsx'.")
+                print("--- %s seconds ---" % (time.time() - start_time))
 
             def process_error(e):
                 progress_bar.stop()
@@ -178,13 +294,6 @@ class Application(tk.Tk):
 
             def process_summary_table_thread():
                 try:
-                    manufacturer_dtc_sheets = self.manufacturer_dtc.sheet_names    
-                    if self.control_unit not in manufacturer_dtc_sheets:
-                        progress_bar.stop()
-                        progress_window.destroy()
-                        return messagebox.showerror("Error", f"Control Unit '{self.control_unit}' not found in the Manufacturer-DTC file sheets.")
-                    
-                    self.get_all_fault_code()
                     for self.index, row in self.summary_table.iterrows():
                         if self.index < self.start_row:
                             continue
@@ -200,11 +309,43 @@ class Application(tk.Tk):
             processing_thread.daemon = True
             processing_thread.start()
             
-        except FileNotFoundError as e:
-            messagebox.showerror("Error", f"Path not found: {e.filename}")
         except Exception as e:
             messagebox.showerror("Error", "An error occurred during the process: ")
 
 if __name__ == "__main__":
     app = Application()
     app.mainloop()
+
+
+
+
+
+
+
+
+
+
+
+###################################################################################################################
+
+
+
+def is_fault_code_in_area(area, fault_code):
+    if len(area) != len(fault_code):
+        return False
+
+    for a, f in zip(area, fault_code):
+        print(f"{a}  -   {f}")
+        if a != 'X' and a != f:
+            return False  # Mismatched characters
+
+    return True
+
+# Example usage
+area = "P1XXX"
+fault_code = "B12FD"
+
+if is_fault_code_in_area(area, fault_code):
+    print("Fault code falls into the area.")
+else:
+    print("Fault code does not fall into the area.")
